@@ -15,25 +15,28 @@
 #         在此前提下，对本软件的使用同样需要遵守 Apache 2.0 许可，Apache 2.0 许可与本许可冲突之处，以本许可为准。
 #         详细的授权流程，请联系 public@ricequant.com 获取。
 
+import codecs
+import json
+import locale
 import os
 import sys
-import locale
-import codecs
-import pickle
 from copy import copy
-from rqalpha.utils.functools import lru_cache
+from itertools import chain
+from typing import Dict, Iterable, Optional
 
-import json
 import h5py
-import pandas
 import numpy as np
-
-from rqalpha.utils.datetime_func import convert_date_to_date_int
-from rqalpha.utils.i18n import gettext as _
+import pandas
 from rqalpha.const import COMMISSION_TYPE, INSTRUMENT_TYPE
 from rqalpha.model.instrument import Instrument
+from rqalpha.utils.datetime_func import convert_date_to_date_int
+from rqalpha.utils.functools import lru_cache
+from rqalpha.utils.i18n import gettext as _
 
-from .storage_interface import AbstractCalendarStore, AbstractInstrumentStore, AbstractDayBarStore, AbstractDateSet
+from .storage_interface import (AbstractCalendarStore, AbstractDateSet,
+                                AbstractDayBarStore, AbstractDividendStore,
+                                AbstractInstrumentStore,
+                                AbstractSimpleFactorStore)
 
 
 class ExchangeTradingCalendarStore(AbstractCalendarStore):
@@ -67,6 +70,7 @@ class FutureInfoStore(object):
         return item
 
     def get_future_info(self, instrument):
+        # type: (Instrument) -> Dict[str, float]
         order_book_id = instrument.order_book_id
         try:
             return self._future_info[order_book_id]
@@ -82,24 +86,39 @@ class FutureInfoStore(object):
 
 
 class InstrumentStore(AbstractInstrumentStore):
-    SUPPORTED_TYPES = (
-        INSTRUMENT_TYPE.CS, INSTRUMENT_TYPE.FUTURE, INSTRUMENT_TYPE.ETF, INSTRUMENT_TYPE.LOF, INSTRUMENT_TYPE.INDX,
-        INSTRUMENT_TYPE.PUBLIC_FUND,
-    )
+    def __init__(self, instruments, instrument_type):
+        # type: (Iterable[Instrument], INSTRUMENT_TYPE) -> None
+        self._instrument_type = instrument_type
+        self._instruments = {}
+        self._sym_id_map = {}
 
-    def __init__(self, f, future_info_store):
-        # type: (str, FutureInfoStore) -> None
-        with open(f, 'rb') as store:
-            d = pickle.load(store)
+        for ins in instruments:
+            if ins.type != instrument_type:
+                continue
+            self._instruments[ins.order_book_id] = ins
+            self._sym_id_map[ins.symbol] = ins.order_book_id
 
-        self._instruments = []
-        for i in d:
-            ins = Instrument(i, future_info_store)
-            if ins.type in self.SUPPORTED_TYPES:
-                self._instruments.append(ins)
+    @property
+    def instrument_type(self):
+        # type: () -> INSTRUMENT_TYPE
+        return self._instrument_type
 
-    def get_all_instruments(self):
-        return self._instruments
+    @property
+    def all_id_and_syms(self):
+        # type: () -> Iterable[str]
+        return chain(self._instruments.keys(), self._sym_id_map.keys())
+
+    def get_instruments(self, id_or_syms):
+        # type: (Optional[Iterable[str]]) -> Iterable[Instrument]
+        if id_or_syms is None:
+            return self._instruments.values()
+        order_book_ids = set()
+        for i in id_or_syms:
+            if i in self._instruments:
+                order_book_ids.add(i)
+            elif i in self._sym_id_map:
+                order_book_ids.add(self._sym_id_map[i])
+        return (self._instruments[i] for i in order_book_ids)
 
 
 class ShareTransformationStore(object):
@@ -161,7 +180,11 @@ class DayBarStore(AbstractDayBarStore):
             return 20050104, 20050104
 
 
-class DividendStore:
+class FutureDayBarStore(DayBarStore):
+    DEFAULT_DTYPE = np.dtype(DayBarStore.DEFAULT_DTYPE.descr + [("open_interest", '<f8')])
+
+
+class DividendStore(AbstractDividendStore):
     def __init__(self, path):
         self._h5 = open_h5(path, mode="r")
 
@@ -200,7 +223,7 @@ class YieldCurveStore:
         return df
 
 
-class SimpleFactorStore:
+class SimpleFactorStore(AbstractSimpleFactorStore):
     def __init__(self, path):
         self._h5 = open_h5(path, mode="r")
 

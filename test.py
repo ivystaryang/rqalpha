@@ -15,9 +15,10 @@
 
 import pickle
 import sys
-from datetime import datetime
 import os
 import csv
+from datetime import datetime
+from typing import Optional, Tuple
 
 from six import iteritems
 import pandas as pd
@@ -34,52 +35,38 @@ TEST_OUT = os.path.abspath("./tests/outs/")
 pd.set_option("display.width", 160)
 
 set_locale("zh_Hans_CN")
+
+
 def run_tests(file_path=None):
-    if file_path is not None:
-        files = [file_path]
-    else:
-        files = [f for f in os.listdir(TEST_DIR) if f.find("test") == 0]
+    tests = {f.replace(".py", ""): f for f in (
+        (file_path, ) if file_path else (f for f in os.listdir(TEST_DIR) if f.find("test") == 0)
+    )}
     error_map = {}
-    for filename in files:
+    for name, filename in tests.items():
         try:
-            r, result_data = run_test(filename)
-            if r is not None:
-                error_map[filename.replace(".py", "")] = result_data
+            result_data = run_test(filename)
+            if result_data is not None:
+                error_map[name] = result_data
         except Exception as e:
-            system_log.exception()
-            error_map[filename.replace(".py", "")] = e
+            error_map[name] = e
     for filename, result_data in iteritems(error_map):
         print(u"*" * 20, u"[{}]did not pass!".format(filename), u"*" * 20)
         if isinstance(result_data, Exception):
             system_log.error(result_data)
         else:
-            df, old_df, result = result_data
-            # print("+" * 10, "old test Dataframe: ", "+" * 10)
-            # print(old_df.drop(result.columns[result.all()], axis=1))
-            # print("+" * 10, "new test Dataframe: ", "+" * 10)
-            # print(df.drop(result.columns[result.all()], axis=1))
-            if "summary" in df.keys():
-                df["summary"] = pd.DataFrame([df["summary"]])
-                old_df["summary"] = pd.DataFrame([old_df["summary"]])
-            for k in df.keys():
-                d = old_df[k][~old_df[k].isin(df[k])].dropna()
-                if not d.empty:
-                    print(k, 'max diff:', d.abs().max(), "\n")
+            _, __, result = result_data
             print(result.all())
     print(u"=" * 40)
-    print(
-        u"[{}|{}] strategies has been passed!".format(
-            len(files) - len(error_map), len(files)
-        )
-    )
+    print("[{}|{}] strategies has been passed!".format(len(tests) - len(error_map), len(tests)))
     return len(error_map)
 
 
 def run_test(filename):
+    # type: (str) -> Optional[Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]]
     config = {"base": {"strategy_file": os.path.join(TEST_DIR, filename)}}
     print(u"Start test: " + str(config["base"]["strategy_file"]))
     result_dict = run(config)["sys_analyser"]
-    df = result_dict["portfolio"]
+
     # del df['positions']
 
     old_pickle_file = os.path.join(TEST_OUT, filename.replace(".py", ".pkl"))
@@ -88,30 +75,22 @@ def run_test(filename):
         if not os.path.exists(TEST_OUT):
             os.makedirs(TEST_OUT)
         pickle.dump(result_dict, open(old_pickle_file, "wb"), protocol=2)
-        return None, None
+        return
     else:
         old_result_dict = pd.read_pickle(old_pickle_file)
 
         # 比较 portfolios
-        old_df = old_result_dict["portfolio"]
-        old_df = old_df.fillna(0)
-        old_df = old_df.replace([np.inf, -np.inf], 0)
-        df = df.fillna(0)
-        df = df.replace([np.inf, -np.inf], 0)
-        # del old_df["trades"]
-        # del df["trades"]
+        old_df = old_result_dict["portfolio"].replace([np.nan, np.inf, -np.inf], 0).round(0)
+        df = result_dict["portfolio"].replace([np.nan, np.inf, -np.inf], 0).round(0)
         try:
             del old_df["dividend_receivable"]
             del df["dividend_receivable"]
         except:
             pass
 
-        df = df.round(0)
-        old_df = old_df.round(0)
-
         result = df.eq(old_df)
         if not result.all().all():
-            return result.all(), (df, old_df, result)
+            return df, old_df, result
 
         # 比较 summary
         old_df = (
@@ -145,9 +124,7 @@ def run_test(filename):
             pass
         result = df.eq(old_df)
         if not result.all().all():
-            return result.all(), (old_result_dict, result_dict, result)
-
-        return None, None
+            return old_result_dict, result_dict, result
 
 
 def is_enable_coverage():

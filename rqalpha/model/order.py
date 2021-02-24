@@ -49,6 +49,7 @@ class Order(object):
         self._type = None
         self._avg_price = None
         self._transaction_cost = None
+        self._kwargs = {}
 
     @staticmethod
     def _str_to_enum(enum_class, s):
@@ -71,6 +72,7 @@ class Order(object):
             'type': self._type,
             'transaction_cost': self._transaction_cost,
             'avg_price': self._avg_price,
+            'kwargs': self._kwargs,
         }
 
     def set_state(self, d):
@@ -85,14 +87,15 @@ class Order(object):
         self._position_effect = POSITION_EFFECT[d["position_effect"]] if d["position_effect"] else None
         self._message = d['message']
         self._filled_quantity = d['filled_quantity']
-        self._status = ORDER_STATUS[d["order_status"]]
+        self._status = ORDER_STATUS[d["status"]]
         self._frozen_price = d['frozen_price']
         self._type = ORDER_TYPE[d["type"]]
         self._transaction_cost = d['transaction_cost']
         self._avg_price = d['avg_price']
+        self._kwargs = d['kwargs']
 
     @classmethod
-    def __from_create__(cls, order_book_id, quantity, side, style, position_effect):
+    def __from_create__(cls, order_book_id, quantity, side, style, position_effect, **kwargs):
         env = Environment.get_instance()
         order = cls()
         order._order_id = next(order.order_id_gen)
@@ -116,6 +119,7 @@ class Order(object):
             order._type = ORDER_TYPE.MARKET
         order._avg_price = 0
         order._transaction_cost = 0
+        order._kwargs = kwargs
         return order
 
     @property
@@ -253,6 +257,16 @@ class Order(object):
             raise RuntimeError("Frozen price of order {} is not supposed to be nan.".format(self.order_id))
         return self._frozen_price
 
+    @property
+    def kwargs(self):
+        return self._kwargs
+
+    def __getattr__(self, item):
+        try:
+            return self.__dict__["_kwargs"][item]
+        except KeyError:
+            raise AttributeError("'{}' object has no attribute '{}'".format(self.__class__.__name__, item))
+
     def is_final(self):
         return self._status not in {
             ORDER_STATUS.PENDING_NEW,
@@ -275,11 +289,11 @@ class Order(object):
         assert self.filled_quantity + quantity <= self.quantity
         new_quantity = self._filled_quantity + quantity
         self._transaction_cost += trade.commission + trade.tax
+        if trade.position_effect != POSITION_EFFECT.MATCH:
+            self._avg_price = (self._avg_price * self._filled_quantity + trade.last_price * quantity) / new_quantity
         self._filled_quantity = new_quantity
         if self.unfilled_quantity == 0:
             self._status = ORDER_STATUS.FILLED
-        if trade.position_effect != POSITION_EFFECT.MATCH:
-            self._avg_price = (self._avg_price * self._filled_quantity + trade.last_price * quantity) / new_quantity
 
     def mark_rejected(self, reject_reason):
         if not self.is_final():

@@ -21,10 +21,11 @@ from itertools import chain
 
 import h5py
 import numpy as np
-
 from rqalpha.apis.api_rqdatac import rqdatac
-from rqalpha.utils.concurrent import ProgressedProcessPoolExecutor, ProgressedTask
-from rqalpha.utils.datetime_func import convert_date_to_date_int, convert_date_to_int
+from rqalpha.utils.concurrent import (ProgressedProcessPoolExecutor,
+                                      ProgressedTask)
+from rqalpha.utils.datetime_func import (convert_date_to_date_int,
+                                         convert_date_to_int)
 
 START_DATE = 20050104
 END_DATE = 29991231
@@ -273,9 +274,7 @@ class GenerateFileTask(ProgressedTask):
 
 STOCK_FIELDS = ['open', 'close', 'high', 'low', 'limit_up', 'limit_down', 'volume', 'total_turnover']
 INDEX_FIELDS = ['open', 'close', 'high', 'low', 'volume', 'total_turnover']
-# FUTURES_FIELDS = STOCK_FIELDS + ['basis_spread', 'settlement', 'prev_settlement']
-FUTURES_FIELDS = STOCK_FIELDS + ['settlement', 'prev_settlement']
-# FUND_FIELDS = STOCK_FIELDS + ['acc_net_value', 'unit_net_value', 'discount_rate']
+FUTURES_FIELDS = STOCK_FIELDS + ['settlement', 'prev_settlement', 'open_interest']
 FUND_FIELDS = STOCK_FIELDS
 
 
@@ -315,36 +314,54 @@ class GenerateDayBarTask(DayBarTask):
 
 
 class UpdateDayBarTask(DayBarTask):
+    def h5_has_valid_fields(self, h5, wanted_fields):
+        obid_gen = (k for k in h5.keys())
+        wanted_fields = set(wanted_fields)
+        wanted_fields.add('datetime')
+        try:
+            h5_fields = set(h5[next(obid_gen)].dtype.fields.keys())
+        except StopIteration:
+            pass
+        else:
+            return h5_fields == wanted_fields
+        return False
+
     def __call__(self, path, fields, **kwargs):
-        with h5py.File(path, 'a') as h5:
-            for order_book_id in self._order_book_ids:
-                if order_book_id in h5:
-                    try:
-                        start_date = rqdatac.get_next_trading_date(int(h5[order_book_id]['datetime'][-1] // 1000000))
-                    except ValueError:
-                        h5.pop(order_book_id)
-                        start_date = START_DATE
-                else:
-                    start_date = START_DATE
-                df = rqdatac.get_price(order_book_id, start_date, END_DATE, '1d',
-                                       adjust_type='none', fields=fields, expect_df=True)
-                if not (df is None or df.empty):
-                    df = df[fields]  # Future order_book_id like SC888 will auto add 'dominant_id'
-                    df = df.loc[order_book_id]
-                    df.reset_index(inplace=True)
-                    df['datetime'] = [convert_date_to_int(d) for d in df['date']]
-                    del df['date']
-                    df.set_index('datetime', inplace=True)
+        need_recreate_h5 = False
+        with h5py.File(path, 'r') as h5:
+            need_recreate_h5 = not self.h5_has_valid_fields(h5, fields)
+        if need_recreate_h5:
+            yield from GenerateDayBarTask(self._order_book_ids)(path, fields, **kwargs)
+        else:
+            with h5py.File(path, 'a') as h5:
+                for order_book_id in self._order_book_ids:
                     if order_book_id in h5:
-                        data = np.array(
-                            [tuple(i) for i in chain(h5[order_book_id][:], df.to_records())],
-                            dtype=h5[order_book_id].dtype
-                        )
-                        del h5[order_book_id]
-                        h5.create_dataset(order_book_id, data=data, **kwargs)
+                        try:
+                            start_date = rqdatac.get_next_trading_date(int(h5[order_book_id]['datetime'][-1] // 1000000))
+                        except ValueError:
+                            h5.pop(order_book_id)
+                            start_date = START_DATE
                     else:
-                        h5.create_dataset(order_book_id, data=df.to_records(), **kwargs)
-                yield 1
+                        start_date = START_DATE
+                    df = rqdatac.get_price(order_book_id, start_date, END_DATE, '1d',
+                                        adjust_type='none', fields=fields, expect_df=True)
+                    if not (df is None or df.empty):
+                        df = df[fields]  # Future order_book_id like SC888 will auto add 'dominant_id'
+                        df = df.loc[order_book_id]
+                        df.reset_index(inplace=True)
+                        df['datetime'] = [convert_date_to_int(d) for d in df['date']]
+                        del df['date']
+                        df.set_index('datetime', inplace=True)
+                        if order_book_id in h5:
+                            data = np.array(
+                                [tuple(i) for i in chain(h5[order_book_id][:], df.to_records())],
+                                dtype=h5[order_book_id].dtype
+                            )
+                            del h5[order_book_id]
+                            h5.create_dataset(order_book_id, data=data, **kwargs)
+                        else:
+                            h5.create_dataset(order_book_id, data=df.to_records(), **kwargs)
+                    yield 1
 
 
 def init_rqdatac_with_warnings_catch():
@@ -370,6 +387,8 @@ def update_bundle(path, create, enable_compression=False, concurrency=1):
         ("futures.h5", rqdatac.all_instruments('Future').order_book_id.tolist(), FUTURES_FIELDS),
         ("funds.h5", rqdatac.all_instruments('FUND').order_book_id.tolist(), FUND_FIELDS),
     )
+
+    rqdatac.reset()
 
     gen_file_funcs = (
         gen_instruments, gen_trading_dates, gen_dividends, gen_splits, gen_ex_factor, gen_st_days,

@@ -16,10 +16,12 @@
 #         详细的授权流程，请联系 public@ricequant.com 获取。
 
 import copy
+import typing
 from collections import OrderedDict
 
+from rqalpha.interface import AbstractMod
 from rqalpha.utils.package_helper import import_mod
-from rqalpha.utils.logger import system_log, system_log
+from rqalpha.utils.logger import system_log
 from rqalpha.utils.i18n import gettext as _
 from rqalpha.utils import RqAttrDict
 
@@ -27,8 +29,8 @@ from rqalpha.utils import RqAttrDict
 class ModHandler(object):
     def __init__(self):
         self._env = None
-        self._mod_list = list()
-        self._mod_dict = OrderedDict()
+        self._mod_list = list()  # type: typing.List[typing.Tuple[str, RqAttrDict]]
+        self._mod_dict = OrderedDict()  # type: typing.OrderedDict[str, AbstractMod]
 
     def set_env(self, environment):
         self._env = environment
@@ -53,7 +55,7 @@ class ModHandler(object):
             if mod_module is None:
                 del self._mod_list[idx]
                 return
-            mod = mod_module.load_mod()
+            mod = mod_module.load_mod()  # type: AbstractMod
 
             mod_config = RqAttrDict(copy.deepcopy(getattr(mod_module, "__config__", {})))
             mod_config.update(user_mod_config)

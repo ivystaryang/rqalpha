@@ -25,7 +25,6 @@ from rqalpha.const import RUN_TYPE, PERSIST_MODE, MARKET, COMMISSION_TYPE
 from rqalpha.utils import RqAttrDict, logger
 from rqalpha.utils.i18n import gettext as _, localization
 from rqalpha.utils.dict_func import deep_update
-from rqalpha.utils.py2 import to_utf8
 from rqalpha.utils.logger import system_log
 from rqalpha.mod.utils import mod_config_value_parse
 
@@ -111,7 +110,7 @@ def dump_config(config_path, config, dumper=yaml.Dumper):
     if not os.path.exists(dirname):
         os.makedirs(dirname)
     with codecs.open(config_path, mode='w', encoding='utf-8') as stream:
-        stream.write(to_utf8(yaml.dump(config, Dumper=dumper)))
+        stream.write(yaml.dump(config, Dumper=dumper))
 
 
 def set_locale(lc):
@@ -152,7 +151,8 @@ def parse_config(config_args, config_path=None, click_type=False, source_code=No
 
     if click_type:
         for k, v in config_args.items():
-            if v is None:
+            # click multiple=True时传入tuple类型 无输入时为tuple()
+            if v is None or (v == tuple()):
                 continue
             if k == 'base__accounts' and not v:
                 continue
@@ -189,7 +189,7 @@ def parse_config(config_args, config_path=None, click_type=False, source_code=No
 
     if config.extra.context_vars:
         if isinstance(config.extra.context_vars, six.string_types):
-            config.extra.context_vars = json.loads(to_utf8(config.extra.context_vars))
+            config.extra.context_vars = json.loads(config.extra.context_vars)
 
     if config.base.frequency == "1d":
         logger.DATETIME_FORMAT = "%Y-%m-%d"

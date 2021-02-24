@@ -15,33 +15,33 @@
 #         在此前提下，对本软件的使用同样需要遵守 Apache 2.0 许可，Apache 2.0 许可与本许可冲突之处，以本许可为准。
 #         详细的授权流程，请联系 public@ricequant.com 获取。
 
-import sys
 import datetime
+import sys
 from pprint import pformat
+from itertools import chain
 
-import logbook
 import jsonpickle.ext.numpy as jsonpickle_numpy
+import logbook
 import six
-
 from rqalpha import const
-from rqalpha.core.strategy_loader import FileStrategyLoader, SourceCodeStrategyLoader, UserFuncStrategyLoader
+from rqalpha.core.executor import Executor
 from rqalpha.core.strategy import Strategy
 from rqalpha.core.strategy_context import StrategyContext
-from rqalpha.core.executor import Executor
+from rqalpha.core.strategy_loader import FileStrategyLoader, SourceCodeStrategyLoader, UserFuncStrategyLoader
 from rqalpha.data.base_data_source import BaseDataSource
 from rqalpha.data.data_proxy import DataProxy
 from rqalpha.environment import Environment
-from rqalpha.events import EVENT, Event
-from rqalpha.execution_context import ExecutionContext
+from rqalpha.core.events import EVENT, Event
+from rqalpha.core.execution_context import ExecutionContext
 from rqalpha.interface import Persistable
 from rqalpha.mod import ModHandler
 from rqalpha.model.bar import BarMap
-from rqalpha.utils import create_custom_exception, RqAttrDict, init_rqdatac_env
+from rqalpha.utils import RqAttrDict, create_custom_exception, init_rqdatac_env
 from rqalpha.utils.exception import CustomException, is_user_exc, patch_user_exc
 from rqalpha.utils.i18n import gettext as _
 from rqalpha.utils.log_capture import LogCapture
+from rqalpha.utils.logger import release_print, system_log, user_log, user_system_log
 from rqalpha.utils.persisit_helper import PersistHelper
-from rqalpha.utils.logger import system_log, user_system_log, user_log
 
 jsonpickle_numpy.register_handlers()
 
@@ -59,7 +59,7 @@ def _adjust_start_date(config, data_proxy):
             ValueError(
                 _(u"There is no data between {start_date} and {end_date}. Please check your"
                   u" data bundle or select other backtest period.").format(
-                      start_date=origin_start_date, end_date=origin_end_date)))
+                    start_date=origin_start_date, end_date=origin_end_date)))
     config.base.start_date = config.base.trading_calendar[0].date()
     config.base.end_date = config.base.trading_calendar[-1].date()
 
@@ -78,20 +78,20 @@ def init_persist_helper(env, ucontext, executor, config):
     if persist_provider is None:
         raise RuntimeError(_(u"Missing persist provider. You need to set persist_provider before use persist"))
     persist_helper = PersistHelper(persist_provider, env.event_bus, config.base.persist_mode)
+    for key, obj in chain([
+        ('user_context', ucontext),
+        ('global_vars', env.global_vars),
+        ('universe', env._universe),
+        ('portfolio', env.portfolio),
+        ('executor', executor),
+    ], ((key, obj) for key, obj in [
+        ('event_source', env.event_source),
+        ('broker', env.broker)
+    ] if isinstance(obj, Persistable)), ((
+        "mod_{}".format(name), mod
+    ) for name, mod in env.mod_dict.items() if isinstance(mod, Persistable))):
+        persist_helper.register(key, obj)
     env.set_persist_helper(persist_helper)
-    persist_helper.register('user_context', ucontext)
-    persist_helper.register('global_vars', env.global_vars)
-    persist_helper.register('universe', env._universe)
-    if isinstance(env.event_source, Persistable):
-        persist_helper.register('event_source', env.event_source)
-    persist_helper.register('portfolio', env.portfolio)
-    for name, module in env.mod_dict.items():
-        if isinstance(module, Persistable):
-            persist_helper.register('mod_{}'.format(name), module)
-    # broker will restore open orders from account
-    if isinstance(env.broker, Persistable):
-        persist_helper.register('broker', env.broker)
-    persist_helper.register('executor', executor)
     return persist_helper
 
 
@@ -115,9 +115,12 @@ def init_rqdatac(rqdatac_uri):
     except ImportError:
         return
 
+    import warnings
+
     try:
         init_rqdatac_env(rqdatac_uri)
-        rqdatac.init()
+        with warnings.catch_warnings(record=True):
+            rqdatac.init()
     except Exception as e:
         system_log.warn(_('rqdatac init failed, some apis will not function properly: {}').format(str(e)))
 
@@ -194,10 +197,16 @@ def run(config, source_code=None, user_funcs=None):
 
         if persist_helper:
             env.event_bus.publish_event(Event(EVENT.BEFORE_SYSTEM_RESTORED))
-            if persist_helper.restore(None):
-                user_system_log.info(_('system restored'))
-            else:
+            restored_obj_state = persist_helper.restore(None)
+            check_key = ["global_vars", "user_context", "executor", "universe"]
+            kept_current_init_data = not any(v for k, v in restored_obj_state.items() if k in check_key)
+            system_log.debug("restored_obj_state: {}".format(restored_obj_state))
+            system_log.debug("kept_current_init_data: {}".format(kept_current_init_data))
+            if kept_current_init_data:
+                # 未能恢复init相关数据 保留当前策略初始化变量(展示当前策略初始化日志)
                 log_capture.replay()
+            else:
+                user_system_log.info(_('system restored'))
             env.event_bus.publish_event(Event(EVENT.POST_SYSTEM_RESTORED))
 
         init_succeed = True
@@ -208,6 +217,7 @@ def run(config, source_code=None, user_funcs=None):
 
         if env.profile_deco:
             output_profile_result(env)
+        release_print(scope)
     except CustomException as e:
         if init_succeed and persist_helper and env.config.base.persist_mode == const.PERSIST_MODE.ON_CRASH:
             persist_helper.persist()

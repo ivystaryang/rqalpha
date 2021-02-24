@@ -13,8 +13,8 @@
 #         详细的授权流程，请联系 public@ricequant.com 获取。
 
 import click
-from rqalpha import cli
 
+from rqalpha import cli
 
 __config__ = {
     # 是否开启信号模式
@@ -33,6 +33,10 @@ __config__ = {
     "slippage_model": "PriceRatioSlippage",
     # 设置滑点
     "slippage": 0,
+    # volume 为 0 时限制成交
+    "inactive_limit": True,
+    # 账户级别每日的管理费用
+    "management_fee": (),
 }
 
 
@@ -87,5 +91,21 @@ cli.commands['run'].params.append(
         ('-mt', '--matching-type', cli_prefix + "matching_type"),
         type=click.Choice(['current_bar', 'next_bar', 'last', 'best_own', 'best_counterparty']),
         help="[sys_simulation] set matching type"
+    )
+)
+
+cli.commands['run'].params.append(
+    click.Option(
+        ('--inactive-limit', cli_prefix + "inactive_limit"),
+        type=click.BOOL, default=True,
+        help="[sys_simulation] Limit transaction when volume is 0"
+    )
+)
+
+cli.commands["run"].params.append(
+    click.Option(
+        ('--management-fee', cli_prefix + "management_fee",),
+        type=click.STRING, nargs=2, multiple=True,
+        help="[sys_simulation] Account management rate. eg '--management-fee stock 0.0002' "
     )
 )

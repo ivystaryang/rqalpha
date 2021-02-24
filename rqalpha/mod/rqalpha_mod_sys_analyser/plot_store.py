@@ -15,60 +15,39 @@
 #         在此前提下，对本软件的使用同样需要遵守 Apache 2.0 许可，Apache 2.0 许可与本许可冲突之处，以本许可为准。
 #         详细的授权流程，请联系 public@ricequant.com 获取。
 
+from collections import defaultdict
 
-__config__ = {
-    "base": {
-        "start_date": "2015-04-11",
-        "end_date": "2015-04-20",
-        "frequency": "1d",
-        "accounts": {
-            "stock": 1000000,
-        }
-    },
-    "extra": {
-        "log_level": "error",
-    },
-    "mod": {
-        "sys_progress": {
-            "enabled": True,
-            "show": True,
-        },
-        "sys_simulation": {
-            "volume_limit": True,
-            "volume_percent": 0.000002
-        }
-    },
-}
+from rqalpha.environment import Environment
+from rqalpha.core.execution_context import ExecutionContext
+from rqalpha.utils.arg_checker import apply_rules, verify_that
+from rqalpha.const import EXECUTION_PHASE
 
 
-def test_open_auction_match():
-    __config__ = {
-        "mod": {
-            "sys_simulation": {
-                "volume_limit": True,
-                "volume_percent": 0.000002
-            }
-        },
-    }
+class PlotStore(object):
+    def __init__(self, env):
+        # type: (Environment) -> None
+        self._env = env
+        self._plots = defaultdict(dict)
 
-    def init(context):
-        context.s = "000001.XSHE"
-        context.bar = None
-        context.first_day = True
+    def add_plot(self, dt, series_name, value):
+        self._plots[series_name][dt] = value
 
-    def open_auction(context, bar_dict):
-        bar = bar_dict[context.s]
-        if context.first_day:
-            order_shares(context.s, 1000, bar.limit_up * 0.99)
-            # 部分成交，仅能成交 900 股
-            assert get_position(context.s).quantity == 900
-            assert get_position(context.s).avg_price == bar.open
+    def get_plots(self):
+        return self._plots
 
-    def handle_bar(context, bar_dict):
-        if context.first_day:
-            bar = bar_dict[context.s]
-            assert get_position(context.s).quantity == 1000
-            assert get_position(context.s).avg_price == (bar.open * 900 + bar.close * 100) / 1000
-            context.first_day = False
+    @ExecutionContext.enforce_phase(
+        EXECUTION_PHASE.ON_BAR, EXECUTION_PHASE.ON_TICK, EXECUTION_PHASE.SCHEDULED
+    )
+    @apply_rules(
+        verify_that("series_name", pre_check=True).is_instance_of(str),
+        verify_that("value", pre_check=True).is_number(),
+    )
+    def plot(self, series_name, value):
+        # type: (str, float) -> None
+        """
+        在生成的图标结果中，某一个根线上增加一个点。
 
-    return locals()
+        :param series_name: 序列名称
+        :param value: 值
+        """
+        self.add_plot(self._env.trading_dt.date(), series_name, value)
